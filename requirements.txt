@@ -61,3 +61,6 @@ typing_extensions==4.14.0
 tzdata==2025.2
 uvicorn==0.34.3
 wcwidth==0.2.13
+fastapi
+uvicorn
+flake8
