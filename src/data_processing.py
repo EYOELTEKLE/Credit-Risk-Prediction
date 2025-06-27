@@ -6,6 +6,9 @@ from sklearn.impute import SimpleImputer, KNNImputer
 from sklearn.preprocessing import OneHotEncoder, LabelEncoder, StandardScaler, MinMaxScaler
 from sklearn.compose import ColumnTransformer
 from xverse.transformer import WOETransformer
+
+from sklearn.cluster import KMeans
+from datetime import datetime
 import os
 
 # --- Custom Transformers ---
@@ -154,6 +157,57 @@ def process_data(
     os.makedirs(os.path.dirname(processed_data_path), exist_ok=True)
     processed.to_csv(processed_data_path, index=False)
 
-# Example usage (uncomment to run as script)
-# if __name__ == "__main__":
-#     process_data('data/raw/transactions.csv', 'data/processed/model_ready.csv', missing_strategy='median', scaling_strategy='standard', encode_nominal=True)
+def assign_high_risk_label(
+    transactions_df,
+    processed_df,
+    customer_id_col='customer_id',
+    amount_col='transaction_amount',
+    datetime_col='transaction_datetime',
+    n_clusters=3,
+    random_state=42,
+    snapshot_date=None
+):
+    """
+    Assign high-risk label to customers using RFM and KMeans clustering.
+    transactions_df: Raw or minimally processed transactions DataFrame (must include customer_id_col, amount_col, datetime_col)
+    processed_df: The processed/model-ready DataFrame to merge the label into
+    Returns: processed_df with new column 'is_high_risk'
+    """
+    # If snapshot_date not provided, use max date + 1 day
+    if snapshot_date is None:
+        snapshot_date = pd.to_datetime(transactions_df[datetime_col]).max() + pd.Timedelta(days=1)
+    else:
+        snapshot_date = pd.to_datetime(snapshot_date)
+
+    # Calculate RFM
+    rfm = transactions_df.groupby(customer_id_col).agg({
+        datetime_col: lambda x: (snapshot_date - pd.to_datetime(x).max()).days,
+        amount_col: ['count', 'sum']
+    })
+    rfm.columns = ['recency', 'frequency', 'monetary']
+    rfm = rfm.reset_index()
+
+    # Scale RFM features
+    scaler = StandardScaler()
+    rfm_scaled = scaler.fit_transform(rfm[['recency', 'frequency', 'monetary']])
+
+    # KMeans clustering
+    kmeans = KMeans(n_clusters=n_clusters, random_state=random_state)
+    clusters = kmeans.fit_predict(rfm_scaled)
+    rfm['cluster'] = clusters
+
+    # Identify high-risk cluster: high recency, low freq, low monetary
+    centers = kmeans.cluster_centers_
+    high_risk_idx = np.argmax(centers[:,0] - centers[:,1] - centers[:,2])
+    rfm['is_high_risk'] = (rfm['cluster'] == high_risk_idx).astype(int)
+
+    # Merge label into processed_df
+    result = processed_df.merge(rfm[[customer_id_col, 'is_high_risk']], on=customer_id_col, how='left')
+    result['is_high_risk'] = result['is_high_risk'].fillna(0).astype(int)
+    return result
+
+# Example usage:
+# raw_df = pd.read_csv('data/raw/transactions.csv')
+# processed_df = pd.read_csv('data/processed/model_ready.csv')
+# labeled_df = assign_high_risk_label(raw_df, processed_df)
+# labeled_df.to_csv('data/processed/model_ready_labeled.csv', index=False)
